@@ -432,47 +432,57 @@ function cutout(image){
 }
 
 /* =====================================================================
-   CLASSEMENT MONDIAL — colle ici les 2 valeurs de ton projet Supabase.
-   Laisse vide pour rester en classement local (par appareil).
-   ===================================================================== */
-const CLOUD = {
-  url: '',   // ex: https://abcdefghijk.supabase.co
-  key: ''    // la clé "anon public" (elle est publique par nature)
-};
-const cloudOn = () => !!(CLOUD.url && CLOUD.key);
+   CLASSEMENT MONDIAL — aucun compte, aucune clé, rien à configurer.
+      Les scores sont stockés dans un seau public partagé par tous les joueurs.
+         Change BUCKET si tu veux repartir d'un classement vierge.
+            ===================================================================== */
+  const BUCKET = 'buildog-run-leaderboard-v1';
+  const CLOUD_URL = 'https://textdb.dev/api/data/' + BUCKET;
+  const cloudOn = () => true;
 
-async function cloudFetch(path, opts){
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 6000);
-  try {
-    const r = await fetch(CLOUD.url.replace(/\/$/,'') + '/rest/v1/' + path, Object.assign({
-      signal: ctl.signal,
-      headers: {
-        'apikey': CLOUD.key,
-        'Authorization': 'Bearer ' + CLOUD.key,
-        'Content-Type': 'application/json'
-      }
-    }, opts || {}));
-    if(!r.ok) throw new Error('HTTP ' + r.status);
-    const txt = await r.text();
-    return txt ? JSON.parse(txt) : null;
-  } finally { clearTimeout(timer); }
-}
-async function cloudSubmit(name, s){
-  return cloudFetch('scores', {
-    method: 'POST',
-    headers: {
-      'apikey': CLOUD.key, 'Authorization': 'Bearer ' + CLOUD.key,
-      'Content-Type': 'application/json', 'Prefer': 'return=minimal'
-    },
-    body: JSON.stringify({ name, score: s })
-  });
-}
-async function cloudTop(n){
-  const rows = await cloudFetch('scores?select=name,score&order=score.desc&limit=' + (n||10));
-  return (rows || []).map(r => ({ n: r.name, s: r.score }));
-}
-
+  async function cloudGet(){
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 7000);
+      try {
+            const r = await fetch(CLOUD_URL + '?t=' + Date.now(), { signal: ctl.signal, cache: 'no-store' });
+            if(!r.ok) throw new Error('HTTP ' + r.status);
+            const txt = (await r.text()).trim();
+            if(!txt) return [];
+            let data;
+            try { data = JSON.parse(txt); } catch(e){ return []; }
+            const arr = Array.isArray(data) ? data : (data && Array.isArray(data._json) ? data._json : []);
+            return arr.filter(e => e && typeof e.s === 'number' && typeof e.n === 'string')
+                      .map(e => ({ n: cleanName(e.n) || 'ANON', s: Math.max(0, Math.min(500000, Math.round(e.s))) }));
+      } finally { clearTimeout(timer); }
+  }
+  async function cloudPut(list){
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 7000);
+      try {
+            const r = await fetch(CLOUD_URL, {
+                    method: 'POST',
+                    signal: ctl.signal,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(list)
+            });
+            if(!r.ok) throw new Error('HTTP ' + r.status);
+      } finally { clearTimeout(timer); }
+  }
+  /* lit, insère le score, réécrit le top 20 */
+  async function cloudSubmit(name, s){
+      const list = await cloudGet();
+      list.push({ n: name, s });
+      list.sort((a,b) => b.s - a.s);
+      const top = list.slice(0, 20);
+      await cloudPut(top);
+      return top;
+  }
+  async function cloudTop(n){
+      const list = await cloudGet();
+      list.sort((a,b) => b.s - a.s);
+      return list.slice(0, n || 10);
+  }
+  
 /* ---------- leaderboard (local à l'appareil) ---------- */
 const LS_NAME = 'buildog.name', LS_SCORES = 'buildog.scores';
 let memScores = null;                       // repli si le stockage est bloqué
@@ -1068,13 +1078,13 @@ function endCut(){
   const s = score();
   let mark = null;
   try { mark = addScore(s).entry; } catch(e){ handleError(e); }
-  if(cloudOn() && mark){
-    cloudSubmit(mark.n, mark.s)
-      .then(() => showBoard(el.board, mark))
-      .catch(() => showBoard(el.board, mark));
-  } else {
-    renderBoard(el.board, mark, null, 'THIS DEVICE');
-  }
+if(mark){
+  const m = mark;
+                          renderBoard(el.board, m, null, 'SENDING…');
+cloudSubmit(m.n, m.s)
+.then(top => renderBoard(el.board, m, top.slice(0,10), 'WORLD TOP 10'))
+.catch(() => renderBoard(el.board, m, null, 'OFFLINE — THIS DEVICE'))
+  ;}
   if(s > best){ best = s; el.goTitle.textContent = 'NEW HIGH SCORE'; }
   else el.goTitle.textContent = 'REKT';
   el.final.textContent = s + ' PTS';
